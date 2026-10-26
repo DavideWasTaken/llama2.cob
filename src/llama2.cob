@@ -1,26 +1,26 @@
        >>SOURCE FORMAT FREE
 *> ==================================================================
-*>  LLAMA2.COB - Inferenza di un modello Llama 2 in puro COBOL
+*>  LLAMA2.COB - Llama 2 inference in pure COBOL
 *>
-*>  Porting di run.c (github.com/karpathy/llama2.c) in GnuCOBOL.
+*>  A port of run.c (github.com/karpathy/llama2.c) to GnuCOBOL.
 *>
-*>  Come si fa andare veloce il COBOL:
-*>  - GnuCOBOL esegue COMPUTE (anche tra interi) con aritmetica
-*>    decimale a precisione arbitraria: corretta ma lenta.
-*>  - I campi USAGE INDEX invece diventano "int" C, e SET, ADD,
-*>    SUBTRACT, MULTIPLY, DIVIDE su di essi diventano C nativo.
-*>  - Quindi il percorso caldo usa "floating point a blocchi": ogni
-*>    vettore e' fatto di interi piccoli piu' un esponente comune
-*>    (valore = intero * 2^k), cosi' i riscalamenti sono shift.
-*>  - Le attivazioni vivono in virgola fissa Q16 (65536 = 1.0), come
-*>    i centesimi di una banca. Nessun float nel ciclo principale.
+*>  How to make COBOL fast:
+*>  - GnuCOBOL runs COMPUTE (even between integers) with arbitrary-
+*>    precision decimal arithmetic: correct but slow.
+*>  - USAGE INDEX fields instead become C "int"s, and SET, ADD,
+*>    SUBTRACT, MULTIPLY, DIVIDE into them become native C.
+*>  - So the hot path uses block floating point: every vector is
+*>    made of small integers plus a shared exponent
+*>    (value = integer * 2^k), so rescaling is a shift.
+*>  - Activations live in Q16 fixed point (65536 = 1.0), like a
+*>    bank's cents. No floats in the main loop.
 *>
-*>  Uso: llama2 <checkpoint> [opzioni]
-*>    -t <float>  temperatura (default 1.0, 0 = greedy)
+*>  Usage: llama2 <checkpoint> [options]
+*>    -t <float>  temperature (default 1.0, 0 = greedy)
 *>    -p <float>  top-p (default 0.9)
-*>    -s <int>    seed casuale (default: orologio)
-*>    -n <int>    numero di passi (default 256, 0 = seq_len)
-*>    -i <testo>  prompt
+*>    -s <int>    random seed (default: clock)
+*>    -n <int>    number of steps (default 256, 0 = seq_len)
+*>    -i <text>   prompt
 *>    -z <file>   tokenizer (default tokenizer.bin)
 *> ==================================================================
 IDENTIFICATION DIVISION.
@@ -28,7 +28,7 @@ PROGRAM-ID. LLAMA2.
 
 DATA DIVISION.
 WORKING-STORAGE SECTION.
-*> ---- capacita' massime (bastano per stories15M) -----------------
+*> ---- maximum capacities (enough for stories15M) -----------------
 78 MAX-W           VALUE 16000000.
 78 MAX-ACT         VALUE 100000.
 78 MAX-KV          VALUE 2000000.
@@ -41,7 +41,7 @@ WORKING-STORAGE SECTION.
 78 MAX-N           VALUE 1024.
 78 CHUNK-FLOATS    VALUE 65536.
 
-*> ---- riga di comando ---------------------------------------------
+*> ---- command line ------------------------------------------------
 01 ARG-COUNT       PIC 9(4) COMP-5.
 01 ARG-IDX         PIC 9(4) COMP-5.
 01 ARG-FLAG        PIC X(256).
@@ -55,7 +55,7 @@ WORKING-STORAGE SECTION.
 01 RNG-SEED        PIC S9(9) COMP-5 VALUE 0.
 01 STEPS           PIC S9(9) COMP-5 VALUE 256.
 
-*> ---- I/O binario (routine byte-stream di GnuCOBOL) --------------
+*> ---- binary I/O (GnuCOBOL byte-stream routines) -----------------
 01 F-HANDLE        PIC X(4).
 01 F-ACCESS        PIC X COMP-X VALUE 1.
 01 F-DENY          PIC X COMP-X VALUE 0.
@@ -65,11 +65,11 @@ WORKING-STORAGE SECTION.
 01 F-FLAGS         PIC X COMP-X VALUE 0.
 01 F-DONE          PIC S9(9) COMP-5.
 01 F-CHUNK         PIC S9(9) COMP-5.
-*> i float del file letti come bit grezzi: li decodifica FLOAT-TO-Q16
+*> the file's floats read as raw bits: FLOAT-TO-Q16 decodes them
 01 F-BUF.
    05 F-BUF-I      PIC S9(9) COMP-5 OCCURS CHUNK-FLOATS TIMES.
 
-*> ---- configurazione del modello (intestazione del checkpoint) ---
+*> ---- model configuration (checkpoint header) --------------------
 01 CFG-HEADER.
    05 DIM          PIC S9(9) COMP-5.
    05 HID          PIC S9(9) COMP-5.
@@ -85,7 +85,7 @@ WORKING-STORAGE SECTION.
 01 KVD             PIC S9(9) COMP-5.
 01 KVMUL           PIC S9(9) COMP-5.
 
-*> ---- offset (base 1) dei tensori dentro WQ ----------------------
+*> ---- 1-based offsets of the tensors inside WQ -------------------
 01 O-EMB           PIC S9(9) COMP-5.
 01 O-RMSATT        PIC S9(9) COMP-5.
 01 O-WQ            PIC S9(9) COMP-5.
@@ -100,12 +100,12 @@ WORKING-STORAGE SECTION.
 01 O-WCLS          PIC S9(9) COMP-5.
 01 N-FLOATS        PIC S9(9) COMP-5.
 
-*> ---- tutti i pesi in Q16 ----------------------------------------
+*> ---- all the weights in Q16 -------------------------------------
 01 WEIGHTS.
    05 WQ           PIC S9(9) COMP-5 OCCURS MAX-W TIMES.
 
-*> ---- pesi delle matrici: interi a 12 bit (stessi offset di WQ) ---
-*>      piu' un esponente per riga: peso_Q16 = MQ * 2^ER
+*> ---- matrix weights: small integers (same offsets as WQ) --------
+*>      plus one exponent per row: weight_Q16 = MQ * 2^ER
 01 MQ-TAB.
    05 MQ           PIC S9(4) COMP-5 OCCURS MAX-W TIMES.
 01 ER-TAB.
@@ -123,7 +123,7 @@ WORKING-STORAGE SECTION.
 01 QT-ROWS         PIC S9(9) COMP-5.
 01 QT-N            PIC S9(9) COMP-5.
 
-*> ---- attivazioni in Q16 (una sola "RAM" con offset) -------------
+*> ---- activations in Q16 (a single "RAM" with offsets) ----------
 01 A-X             PIC S9(9) COMP-5.
 01 A-XB            PIC S9(9) COMP-5.
 01 A-XB2           PIC S9(9) COMP-5.
@@ -138,7 +138,7 @@ WORKING-STORAGE SECTION.
 01 ACTS.
    05 ACT          PIC S9(9) COMP-5 OCCURS MAX-ACT TIMES.
 
-*> ---- KV cache quantizzata: un esponente per (strato, pos, testa) -
+*> ---- quantized KV cache: one exponent per (layer, pos, head) -----
 01 KQ-TAB.
    05 KQ           PIC S9(4) COMP-5 OCCURS MAX-KV TIMES.
 01 VQ-TAB.
@@ -151,22 +151,22 @@ WORKING-STORAGE SECTION.
 01 KV-BASE         PIC S9(9) COMP-5.
 01 KE-BASE         PIC S9(9) COMP-5.
 
-*> ---- vettore quantizzato (uscita di QUANT-VEC) ------------------
+*> ---- quantized vector (output of QUANT-VEC) ---------------------
 01 QB-TAB.
    05 QB           USAGE INDEX OCCURS MAX-N TIMES.
 01 QV-IN           PIC S9(9) COMP-5.
 01 QV-N            PIC S9(9) COMP-5.
 01 QV-K            USAGE INDEX.
-*> limiti di quantizzazione: una somma di n prodotti |w| * |x| deve
-*> stare in 32 bit, quindi (WLIM+1) * (XLIM+1) * n < 2^31. I bit
-*> disponibili si dividono a meta' tra i due fattori (vedi SPLIT-BITS).
+*> quantization limits: a sum of n products |w| * |x| must fit in
+*> 32 bits, so (WLIM+1) * (XLIM+1) * n < 2^31. The available bits
+*> are split in half between the two factors (see SPLIT-BITS).
 01 WLIM-D          PIC S9(9) COMP-5.
 01 WLIM-H          PIC S9(9) COMP-5.
 01 XLIM-D          PIC S9(9) COMP-5.
 01 XLIM-H          PIC S9(9) COMP-5.
 01 KLIM            PIC S9(9) COMP-5.
 01 QLIM            PIC S9(9) COMP-5.
-*> i v sono pesati da coefficienti che sommano a 2^15: bastano 15 bit
+*> v is weighted by coefficients that sum to 2^15: 15 bits are enough
 01 VLIM            PIC S9(9) COMP-5 VALUE 32766.
 01 SB-N            PIC S9(9) COMP-5.
 01 SB-A            PIC S9(9) COMP-5.
@@ -174,7 +174,7 @@ WORKING-STORAGE SECTION.
 01 SB-P            PIC S9(18) COMP-5.
 01 QT-LIM          PIC S9(9) COMP-5.
 
-*> ---- interi C nativi (USAGE INDEX) per tutto il percorso caldo ---
+*> ---- native C integers (USAGE INDEX) for the whole hot path -----
 01 P2-TAB.
    05 P2           USAGE INDEX OCCURS 31 TIMES.
 01 IP              USAGE INDEX.
@@ -205,7 +205,7 @@ WORKING-STORAGE SECTION.
 01 IM              USAGE INDEX.
 01 IEXP            USAGE INDEX.
 01 INEG            USAGE INDEX.
-*> operandi e risultato di MUL-Q16
+*> operands and result of MUL-Q16
 01 IX              USAGE INDEX.
 01 IY              USAGE INDEX.
 01 IZ              USAGE INDEX.
@@ -222,22 +222,22 @@ WORKING-STORAGE SECTION.
 01 R-K             PIC S9(9) COMP-5.
 01 RPI             PIC S9(9) COMP-5.
 
-*> ---- esponenziale in virgola fissa ------------------------------
-*> FUNCTION EXP costa ~120 microsecondi: troppo. Due tabelle Q15:
+*> ---- fixed-point exponential ------------------------------------
+*> FUNCTION EXP costs ~100 microseconds: too much. Two Q15 tables:
 *> exp(-u) = exp(-(u div 1024)/64) * exp(-(u mod 1024)/65536), u in Q16
 01 EXH-TAB.
    05 EXH          USAGE INDEX OCCURS 1025 TIMES.
 01 EXL-TAB.
    05 EXL          USAGE INDEX OCCURS 1024 TIMES.
 
-*> ---- attenzione -------------------------------------------------
+*> ---- attention --------------------------------------------------
 01 ATS-TAB.
    05 ATS          USAGE INDEX OCCURS MAX-SEQ TIMES.
 01 ATE-TAB.
    05 ATE          USAGE INDEX OCCURS MAX-SEQ TIMES.
 01 INV-SQRT-HS     PIC S9(9) COMP-5.
 
-*> ---- tabelle RoPE precalcolate (cos/sin in Q16) -----------------
+*> ---- precomputed RoPE tables (cos/sin in Q16) -------------------
 01 ROPE-TAB.
    05 ROPE-ENTRY   OCCURS MAX-ROPE TIMES.
       10 ROPE-C    PIC S9(9) COMP-5.
@@ -250,7 +250,7 @@ WORKING-STORAGE SECTION.
 01 R-VAL           COMP-2.
 01 R-STEP          COMP-2.
 
-*> ---- registri per i "sottoprogrammi" (paragrafi) ---------------
+*> ---- registers for the "subroutines" (paragraphs) --------------
 01 M-OUT           PIC S9(9) COMP-5.
 01 M-W             PIC S9(9) COMP-5.
 01 M-N             PIC S9(9) COMP-5.
@@ -280,14 +280,14 @@ WORKING-STORAGE SECTION.
 01 V0              PIC S9(9) COMP-5.
 01 V1              PIC S9(9) COMP-5.
 
-*> ---- stato della generazione ------------------------------------
+*> ---- generation state -------------------------------------------
 01 G-POS           PIC S9(9) COMP-5.
 01 G-TOKEN         PIC S9(9) COMP-5.
 01 G-NEXT          PIC S9(9) COMP-5.
 
 *> ---- tokenizer --------------------------------------------------
-*> il file si legge tutto in una volta (ogni CBL_READ_FILE costa
-*> ~150 microsecondi) e poi si scompone in memoria
+*> the file is read in one go (each CBL_READ_FILE is a system call,
+*> very slow on some filesystems) and then split up in memory
 78 MAX-TOKFILE     VALUE 2000000.
 01 TOK-BUF         PIC X(MAX-TOKFILE).
 01 TOK-SIZE        PIC X(8) COMP-X.
@@ -301,7 +301,7 @@ WORKING-STORAGE SECTION.
       10 VOC-STR   PIC X(32).
       10 VOC-LEN   PIC S9(4) COMP-5.
       10 VOC-SCORE COMP-1.
-*> copia ordinata del vocabolario per la ricerca binaria (SEARCH ALL)
+*> sorted copy of the vocabulary for binary search (SEARCH ALL)
 01 SORTED-TAB.
    05 SV-ENTRY     OCCURS 1 TO MAX-VOCAB TIMES DEPENDING ON N-VOCAB
                    ASCENDING KEY IS SV-STR
@@ -334,8 +334,8 @@ WORKING-STORAGE SECTION.
 01 HEX-VAL         PIC S9(4) COMP-5.
 01 HEX-K           PIC S9(4) COMP-5.
 
-*> ---- campionamento ----------------------------------------------
-*> probabilita' intere (non normalizzate) dalla tabella di exp
+*> ---- sampling ---------------------------------------------------
+*> integer (unnormalized) probabilities from the exp table
 01 PROB-TAB.
    05 PROB         PIC S9(9) COMP-5 OCCURS MAX-VOCAB TIMES.
 01 PI-COUNT        PIC S9(9) COMP-5 VALUE 1.
@@ -352,7 +352,7 @@ WORKING-STORAGE SECTION.
 01 P-COIN          COMP-2.
 01 P-LAST          PIC S9(9) COMP-5.
 
-*> ---- cronometro -------------------------------------------------
+*> ---- timer ------------------------------------------------------
 01 CUR-DT.
    05 CD-DATE      PIC 9(8).
    05 CD-HH        PIC 99.
@@ -376,7 +376,7 @@ MAIN.
     STOP RUN.
 
 *> ==================================================================
-*>  RIGA DI COMANDO
+*>  COMMAND LINE
 *> ==================================================================
 PARSE-ARGS.
     ACCEPT ARG-COUNT FROM ARGUMENT-NUMBER
@@ -413,7 +413,7 @@ PARSE-ARGS.
     IF STEPS < 0
         MOVE 0 TO STEPS
     END-IF
-    *> lunghezza del prompt senza gli spazi di riempimento
+    *> prompt length without the trailing padding spaces
     MOVE 1024 TO PROMPT-LEN
     PERFORM UNTIL PROMPT-LEN = 0
                OR PROMPT-TXT(PROMPT-LEN:1) NOT = SPACE
@@ -421,19 +421,19 @@ PARSE-ARGS.
     END-PERFORM.
 
 SHOW-USAGE.
-    DISPLAY "Uso:   llama2 <checkpoint> [opzioni]" UPON SYSERR
-    DISPLAY "Esempio: llama2 model.bin -n 256 -i ""Once upon a time"""
+    DISPLAY "Usage:   llama2 <checkpoint> [options]" UPON SYSERR
+    DISPLAY "Example: llama2 model.bin -n 256 -i ""Once upon a time"""
         UPON SYSERR
-    DISPLAY "Opzioni:" UPON SYSERR
-    DISPLAY "  -t <float>  temperatura in [0,inf], default 1.0" UPON SYSERR
+    DISPLAY "Options:" UPON SYSERR
+    DISPLAY "  -t <float>  temperature in [0,inf], default 1.0" UPON SYSERR
     DISPLAY "  -p <float>  top-p in [0,1], default 0.9" UPON SYSERR
-    DISPLAY "  -s <int>    seed casuale, default orologio" UPON SYSERR
-    DISPLAY "  -n <int>    passi da generare, default 256" UPON SYSERR
-    DISPLAY "  -i <testo>  prompt" UPON SYSERR
+    DISPLAY "  -s <int>    random seed, default clock" UPON SYSERR
+    DISPLAY "  -n <int>    steps to generate, default 256" UPON SYSERR
+    DISPLAY "  -i <text>   prompt" UPON SYSERR
     DISPLAY "  -z <file>   tokenizer, default tokenizer.bin" UPON SYSERR
     STOP RUN RETURNING 1.
 
-*> P2(k + 1) = 2^k, per gli shift nativi
+*> P2(k + 1) = 2^k, for native shifts
 INIT-POW2.
     SET P2(1) TO 1
     PERFORM VARYING LI FROM 2 BY 1 UNTIL LI > 31
@@ -442,19 +442,19 @@ INIT-POW2.
     END-PERFORM.
 
 *> ==================================================================
-*>  CARICAMENTO DEL CHECKPOINT: intestazione + pesi float -> Q16
+*>  CHECKPOINT LOADING: header + float weights -> Q16
 *> ==================================================================
 LOAD-CHECKPOINT.
     CALL "CBL_OPEN_FILE" USING CKPT-PATH F-ACCESS F-DENY F-DEVICE F-HANDLE
     IF RETURN-CODE NOT = 0
-        DISPLAY "Impossibile aprire " FUNCTION TRIM(CKPT-PATH) UPON SYSERR
+        DISPLAY "Cannot open " FUNCTION TRIM(CKPT-PATH) UPON SYSERR
         STOP RUN RETURNING 1
     END-IF
     MOVE 0 TO F-OFFSET
     MOVE 28 TO F-NBYTES
     CALL "CBL_READ_FILE" USING F-HANDLE F-OFFSET F-NBYTES F-FLAGS CFG-HEADER
 
-    *> vocab_size negativo = classificatore separato dagli embedding
+    *> negative vocab_size = classifier separate from the embeddings
     IF HDR-VOCAB > 0
         MOVE 1 TO SHARED-W
         MOVE HDR-VOCAB TO N-VOCAB
@@ -472,12 +472,12 @@ LOAD-CHECKPOINT.
        OR DIM > MAX-N OR HID > MAX-N
        OR N-LAYERS * SEQ-LEN * KVD > MAX-KV
        OR N-LAYERS * SEQ-LEN * N-KVH > MAX-KVROWS
-        DISPLAY "Modello troppo grande per le tabelle di LLAMA2"
+        DISPLAY "Model too large for the LLAMA2 tables"
             UPON SYSERR
         STOP RUN RETURNING 1
     END-IF
 
-    *> offset dei tensori, nello stesso ordine di memory_map_weights()
+    *> tensor offsets, in the same order as memory_map_weights()
     MOVE 1 TO O-EMB
     COMPUTE O-RMSATT = O-EMB    + N-VOCAB * DIM
     COMPUTE O-WQ     = O-RMSATT + N-LAYERS * DIM
@@ -489,7 +489,7 @@ LOAD-CHECKPOINT.
     COMPUTE O-W2     = O-W1     + N-LAYERS * DIM * HID
     COMPUTE O-W3     = O-W2     + N-LAYERS * HID * DIM
     COMPUTE O-RMSFIN = O-W3     + N-LAYERS * DIM * HID
-    *> dopo rms_final ci sono le vecchie tabelle freq_cis (non usate)
+    *> after rms_final come the old freq_cis tables (unused)
     COMPUTE N-FLOATS = O-RMSFIN - 1 + DIM + SEQ-LEN * HS
     IF SHARED-W = 1
         MOVE O-EMB TO O-WCLS
@@ -498,12 +498,12 @@ LOAD-CHECKPOINT.
         COMPUTE N-FLOATS = N-FLOATS + N-VOCAB * DIM
     END-IF
     IF N-FLOATS > MAX-W
-        DISPLAY "Troppi pesi: " N-FLOATS UPON SYSERR
+        DISPLAY "Too many weights: " N-FLOATS UPON SYSERR
         STOP RUN RETURNING 1
     END-IF
 
-    *> legge i float a blocchi e li converte in Q16 decodificando
-    *> a mano i bit IEEE-754: niente aritmetica in virgola mobile
+    *> reads the floats in chunks and converts them to Q16 by decoding
+    *> the IEEE-754 bits by hand: no floating-point arithmetic
     MOVE 28 TO F-OFFSET
     MOVE 0 TO F-DONE
     PERFORM UNTIL F-DONE >= N-FLOATS
@@ -511,7 +511,7 @@ LOAD-CHECKPOINT.
         COMPUTE F-NBYTES = F-CHUNK * 4
         CALL "CBL_READ_FILE" USING F-HANDLE F-OFFSET F-NBYTES F-FLAGS F-BUF
         IF RETURN-CODE NOT = 0
-            DISPLAY "Checkpoint troncato" UPON SYSERR
+            DISPLAY "Truncated checkpoint" UPON SYSERR
             STOP RUN RETURNING 1
         END-IF
         SET IWI TO F-DONE
@@ -530,14 +530,14 @@ LOAD-CHECKPOINT.
     PERFORM QUANTIZE-WEIGHTS.
 
 *> ------------------------------------------------------------------
-*>  COMPUTE-LIMITS: i limiti di quantizzazione per ogni lunghezza n
+*>  COMPUTE-LIMITS: the quantization limits for each length n
 *> ------------------------------------------------------------------
 COMPUTE-LIMITS.
     MOVE DIM TO SB-N
     PERFORM SPLIT-BITS
     MOVE SB-A TO WLIM-D
     MOVE SB-B TO XLIM-D
-    *> per la somma dei quadrati di RMSNORM: (RLIM+1)^2 * dim < 2^31
+    *> for RMSNORM's sum of squares: (RLIM+1)^2 * dim < 2^31
     COMPUTE RLIM = SB-A / 2
     MOVE HID TO SB-N
     PERFORM SPLIT-BITS
@@ -547,14 +547,14 @@ COMPUTE-LIMITS.
     PERFORM SPLIT-BITS
     MOVE SB-A TO KLIM
     MOVE SB-B TO QLIM
-    *> k finisce in campi a 16 bit
+    *> k ends up in 16-bit fields
     IF KLIM > 32766
         MOVE 32766 TO KLIM
     END-IF.
 
-*> SB-A = 2^k - 1 col k piu' grande tale che 4^k * n < 2^31,
-*> SB-B = quanto resta per l'altro fattore, con un margine di 1
-*> per l'arrotondamento di FIND-SHIFT
+*> SB-A = 2^k - 1 for the largest k such that 4^k * n < 2^31,
+*> SB-B = what is left for the other factor, with a margin of 1
+*> for FIND-SHIFT's rounding
 SPLIT-BITS.
     MOVE 1 TO SB-P
     PERFORM UNTIL SB-P * SB-P * 4 * SB-N > 2147483647
@@ -564,13 +564,13 @@ SPLIT-BITS.
     COMPUTE SB-B = 2147483647 / (SB-P * SB-N) - 2.
 
 *> ------------------------------------------------------------------
-*>  FLOAT-TO-Q16: bit IEEE-754 a 32 bit in IB -> valore Q16 in IV.
-*>  segno (1 bit) | esponente (8 bit) | mantissa (23 bit)
+*>  FLOAT-TO-Q16: 32-bit IEEE-754 bits in IB -> Q16 value in IV.
+*>  sign (1 bit) | exponent (8 bits) | mantissa (23 bits)
 *> ------------------------------------------------------------------
 FLOAT-TO-Q16.
     SET INEG TO 0
     IF IB < 0
-        *> togli il bit di segno: IB + 2^31, senza sforare
+        *> drop the sign bit: IB + 2^31, without overflowing
         SET INEG TO 1
         ADD 2147483647 TO IB
         ADD 1 TO IB
@@ -582,10 +582,10 @@ FLOAT-TO-Q16.
     SET IM TO IB
     SUBTRACT IV FROM IM
     IF IEXP = 0
-        *> zero (o denormale, comunque trascurabile in Q16)
+        *> zero (or denormal, negligible in Q16 anyway)
         SET IV TO 0
     ELSE
-        *> valore = (2^23 + mantissa) * 2^(esponente - 127 - 23 + 16)
+        *> value = (2^23 + mantissa) * 2^(exponent - 127 - 23 + 16)
         ADD 8388608 TO IM
         SET IV TO IM
         SET ISH TO IEXP
@@ -603,8 +603,8 @@ FLOAT-TO-Q16.
     END-IF.
 
 *> ------------------------------------------------------------------
-*>  QUANTIZE-WEIGHTS: ogni riga di ogni matrice diventa interi piccoli
-*>  (|MQ| <= WLIM+1) con un esponente per riga: peso_Q16 = MQ * 2^ER
+*>  QUANTIZE-WEIGHTS: every row of every matrix becomes small integers
+*>  (|MQ| <= WLIM+1) with one exponent per row: weight_Q16 = MQ * 2^ER
 *> ------------------------------------------------------------------
 QUANTIZE-WEIGHTS.
     MOVE 1 TO N-ROWS
@@ -655,7 +655,7 @@ QUANTIZE-WEIGHTS.
 
 QUANT-TENSOR.
     IF N-ROWS + QT-ROWS > MAX-ROWS
-        DISPLAY "Troppe righe da quantizzare" UPON SYSERR
+        DISPLAY "Too many rows to quantize" UPON SYSERR
         STOP RUN RETURNING 1
     END-IF
     SET IWI TO QT-OFF
@@ -682,9 +682,9 @@ QUANT-TENSOR.
     END-PERFORM.
 
 *> ==================================================================
-*>  ARITMETICA NATIVA: shift, valori assoluti, esponenziali
+*>  NATIVE ARITHMETIC: shifts, absolute values, exponentials
 *> ==================================================================
-*> IV = IV * 2^ISH (ISH negativo = divisione arrotondata)
+*> IV = IV * 2^ISH (negative ISH = rounded division)
 APPLY-SHIFT.
     IF ISH > 0
         MULTIPLY P2(ISH + 1) BY IV
@@ -696,7 +696,7 @@ APPLY-SHIFT.
         END-IF
     END-IF.
 
-*> IV = round(IV / 2^ISR), ISR >= 1, arrotondando lontano da zero
+*> IV = round(IV / 2^ISR), ISR >= 1, rounding half away from zero
 RSHIFT.
     IF ISR > 30
         SET IV TO 0
@@ -721,7 +721,7 @@ ABS-MAX.
         SET IMAX TO IA
     END-IF.
 
-*> IK = il piu' piccolo k (>= -16) tale che IMAX / 2^k <= ILIM
+*> IK = the smallest k (>= -16) such that IMAX / 2^k <= ILIM
 FIND-SHIFT.
     SET IK TO 0
     SET IT TO IMAX
@@ -741,8 +741,8 @@ FIND-SHIFT.
         END-PERFORM
     END-IF.
 
-*> IZ = round(IX * IY / 65536), tutto in 32 bit. Il prodotto pieno
-*> sforerebbe, quindi si spezza ogni fattore in alto*2^15 + basso:
+*> IZ = round(IX * IY / 65536), all in 32 bits. The full product
+*> would overflow, so each factor is split into high*2^15 + low:
 *> x*y/2^16 = xh*yh*2^14 + (xh*yl + xl*yh)/2 + xl*yl/2^16
 MUL-Q16.
     SET MSG TO 1
@@ -772,11 +772,11 @@ MUL-Q16.
     MULTIPLY 32768 BY MYL
     SUBTRACT MYL FROM MY
     SET MYL TO MY
-    *> termine alto
+    *> high term
     SET IZ TO MXH
     MULTIPLY MYH BY IZ
     MULTIPLY 16384 BY IZ
-    *> termini misti: meta' intera subito, il resto va nel termine basso
+    *> mixed terms: the whole half now, the remainder goes to the low term
     SET MT TO MXH
     MULTIPLY MYL BY MT
     SET MLO TO MXL
@@ -788,7 +788,7 @@ MUL-Q16.
     MULTIPLY 2 BY MT
     SUBTRACT MT FROM MLO
     MULTIPLY 32768 BY MLO
-    *> termine basso, arrotondato
+    *> low term, rounded
     SET MT TO MXL
     MULTIPLY MYL BY MT
     ADD MT TO MLO
@@ -797,7 +797,7 @@ MUL-Q16.
     ADD MLO TO IZ
     MULTIPLY MSG BY IZ.
 
-*> IE = exp(-IU / 65536) in Q15, con IU >= 0 in Q16
+*> IE = exp(-IU / 65536) in Q15, with IU >= 0 in Q16
 EXP15.
     IF IU >= 1048576
         SET IE TO 0
@@ -816,8 +816,8 @@ EXP15.
     END-IF.
 
 *> ------------------------------------------------------------------
-*>  QUANT-VEC: ACT(QV-IN), QV-N valori -> QB(1..QV-N) interi con
-*>  |QB| <= ILIM+1 e un esponente comune: valore_Q16 = QB * 2^QV-K
+*>  QUANT-VEC: ACT(QV-IN), QV-N values -> QB(1..QV-N) integers with
+*>  |QB| <= ILIM+1 and a shared exponent: value_Q16 = QB * 2^QV-K
 *> ------------------------------------------------------------------
 QUANT-VEC.
     SET IMAX TO 1
@@ -842,22 +842,22 @@ QUANT-VEC.
     END-PERFORM.
 
 *> ==================================================================
-*>  CARICAMENTO DEL TOKENIZER
+*>  TOKENIZER LOADING
 *> ==================================================================
 LOAD-TOKENIZER.
     CALL "CBL_OPEN_FILE" USING TOK-PATH F-ACCESS F-DENY F-DEVICE F-HANDLE
     IF RETURN-CODE NOT = 0
-        DISPLAY "Impossibile aprire " FUNCTION TRIM(TOK-PATH) UPON SYSERR
+        DISPLAY "Cannot open " FUNCTION TRIM(TOK-PATH) UPON SYSERR
         STOP RUN RETURNING 1
     END-IF
-    *> flag 128: CBL_READ_FILE restituisce la dimensione del file
+    *> flag 128: CBL_READ_FILE returns the file size
     MOVE 0 TO TOK-SIZE
     MOVE 0 TO F-NBYTES
     MOVE 128 TO F-FLAGS
     CALL "CBL_READ_FILE" USING F-HANDLE TOK-SIZE F-NBYTES F-FLAGS TOK-BUF
     MOVE 0 TO F-FLAGS
     IF TOK-SIZE > MAX-TOKFILE
-        DISPLAY "Tokenizer troppo grande" UPON SYSERR
+        DISPLAY "Tokenizer too large" UPON SYSERR
         STOP RUN RETURNING 1
     END-IF
     MOVE 0 TO F-OFFSET
@@ -865,8 +865,8 @@ LOAD-TOKENIZER.
     CALL "CBL_READ_FILE" USING F-HANDLE F-OFFSET F-NBYTES F-FLAGS TOK-BUF
     CALL "CBL_CLOSE_FILE" USING F-HANDLE
 
-    *> formato: max_token_length, poi per ogni token
-    *> punteggio (float), lunghezza (int), byte della stringa
+    *> format: max_token_length, then for each token
+    *> score (float), length (int), the string's bytes
     MOVE TOK-BUF(1:4) TO B4
     MOVE B4-I TO MAX-TOK-LEN
     MOVE 5 TO TOK-P
@@ -876,11 +876,11 @@ LOAD-TOKENIZER.
         MOVE TOK-BUF(TOK-P + 4:4) TO B4
         ADD 8 TO TOK-P
         IF B4-I > 32 OR TOK-P + B4-I - 1 > TOK-SIZE
-            DISPLAY "Tokenizer non valido" UPON SYSERR
+            DISPLAY "Invalid tokenizer" UPON SYSERR
             STOP RUN RETURNING 1
         END-IF
-        *> le stringhe sono riempite con LOW-VALUES, non spazi:
-        *> cosi' " " e "  " restano token diversi
+        *> strings are padded with LOW-VALUES, not spaces,
+        *> so " " and "  " stay different tokens
         MOVE LOW-VALUES TO VOC-STR(LI)
         MOVE B4-I TO VOC-LEN(LI)
         IF B4-I > 0
@@ -893,7 +893,7 @@ LOAD-TOKENIZER.
     SORT SV-ENTRY ON ASCENDING KEY SV-STR.
 
 *> ==================================================================
-*>  STATO: layout delle attivazioni, tabelle, generatore casuale
+*>  STATE: activation layout, tables, random generator
 *> ==================================================================
 INIT-STATE.
     MOVE 1 TO A-X
@@ -908,12 +908,12 @@ INIT-STATE.
     COMPUTE A-LOG = A-V   + KVD
     COMPUTE A-END = A-LOG + N-VOCAB
     IF A-END > MAX-ACT
-        DISPLAY "Troppe attivazioni" UPON SYSERR
+        DISPLAY "Too many activations" UPON SYSERR
         STOP RUN RETURNING 1
     END-IF
 
-    *> tabelle di exp in Q15. FUNCTION EXP e' lenta, quindi due sole
-    *> chiamate e poi exp(-(k+1)d) = exp(-kd) * exp(-d)
+    *> exp tables in Q15. FUNCTION EXP is slow, so only two calls
+    *> and then exp(-(k+1)d) = exp(-kd) * exp(-d)
     COMPUTE R-STEP = FUNCTION EXP(-1 / 64)
     MOVE 1 TO R-VAL
     PERFORM VARYING LI FROM 1 BY 1 UNTIL LI > 1025
@@ -933,9 +933,9 @@ INIT-STATE.
         COMPUTE INV-TEMP ROUNDED = 65536 / TEMPERATURE
     END-IF
 
-    *> RoPE: angolo = pos * freq, freq = 1 / 10000^(2i/head_size).
-    *> cos e sin di pos*freq per rotazioni successive di freq:
-    *> una sola chiamata a COS e SIN per frequenza
+    *> RoPE: angle = pos * freq, freq = 1 / 10000^(2i/head_size).
+    *> cos and sin of pos*freq by successive rotations by freq:
+    *> a single call to COS and SIN per frequency
     PERFORM VARYING LI FROM 0 BY 1 UNTIL LI >= HS2
         COMPUTE FREQ = 1 / (10000 ** (2 * LI / HS))
         COMPUTE R-C1 = FUNCTION COS(FREQ)
@@ -962,7 +962,7 @@ INIT-STATE.
     COMPUTE P-COIN = FUNCTION RANDOM(RNG-SEED).
 
 *> ==================================================================
-*>  CICLO DI GENERAZIONE
+*>  GENERATION LOOP
 *> ==================================================================
 RUN-GENERATION.
     PERFORM ENCODE-PROMPT
@@ -976,7 +976,7 @@ RUN-GENERATION.
             PERFORM SAMPLE
         END-IF
         ADD 1 TO G-POS
-        *> il token BOS (1) delimita le sequenze
+        *> the BOS token (1) delimits sequences
         IF G-NEXT = 1
             EXIT PERFORM
         END-IF
@@ -1002,24 +1002,24 @@ GET-TIME.
     COMPUTE NOW-S = CD-HH * 3600 + CD-MI * 60 + CD-SS + CD-HS / 100.
 
 *> ==================================================================
-*>  FORWARD: un passo del transformer per il token G-TOKEN in G-POS
+*>  FORWARD: one transformer step for token G-TOKEN at G-POS
 *> ==================================================================
 FORWARD.
-    *> embedding del token
+    *> token embedding
     COMPUTE WI = O-EMB + G-TOKEN * DIM
     PERFORM VARYING LJ FROM 0 BY 1 UNTIL LJ >= DIM
         MOVE WQ(WI + LJ) TO ACT(A-X + LJ)
     END-PERFORM
 
     PERFORM VARYING LYR FROM 0 BY 1 UNTIL LYR >= N-LAYERS
-        *> --- blocco di attenzione ---
+        *> --- attention block ---
         MOVE A-XB TO R-OUT
         MOVE A-X TO R-IN
         COMPUTE R-W = O-RMSATT + LYR * DIM
         MOVE DIM TO R-N
         PERFORM RMSNORM
 
-        *> q, k e v leggono lo stesso xb: si quantizza una volta sola
+        *> q, k and v all read the same xb: quantize it once
         MOVE A-XB TO QV-IN
         MOVE DIM TO QV-N
         SET ILIM TO XLIM-D
@@ -1058,14 +1058,14 @@ FORWARD.
         MOVE DIM TO M-D
         PERFORM MATMUL
 
-        *> connessione residua: x += xb2
+        *> residual connection: x += xb2
         PERFORM VARYING LJ FROM 0 BY 1 UNTIL LJ >= DIM
             SET IV TO ACT(A-X + LJ)
             ADD ACT(A-XB2 + LJ) TO IV
             SET ACT(A-X + LJ) TO IV
         END-PERFORM
 
-        *> --- blocco feed-forward (SwiGLU) ---
+        *> --- feed-forward block (SwiGLU) ---
         MOVE A-XB TO R-OUT
         MOVE A-X TO R-IN
         COMPUTE R-W = O-RMSFFN + LYR * DIM
@@ -1089,7 +1089,7 @@ FORWARD.
         COMPUTE M-R = RB-W3 + LYR * HID
         PERFORM MATMUL
 
-        *> SwiGLU: hb = silu(hb) * hb2, con sigmoid da tabella
+        *> SwiGLU: hb = silu(hb) * hb2, with sigmoid from the table
         PERFORM VARYING LJ FROM 0 BY 1 UNTIL LJ >= HID
             SET IX TO ACT(A-HB + LJ)
             IF IX >= 0
@@ -1098,7 +1098,7 @@ FORWARD.
                 SET IU TO 0
                 SUBTRACT IX FROM IU
             END-IF
-            *> e = exp(-|v|) in Q15; sigmoid in Q15, poi Q16
+            *> e = exp(-|v|) in Q15; sigmoid in Q15, then Q16
             PERFORM EXP15
             SET IT TO 32768
             ADD IE TO IT
@@ -1132,7 +1132,7 @@ FORWARD.
         MOVE DIM TO M-D
         PERFORM MATMUL
 
-        *> connessione residua: x += xb
+        *> residual connection: x += xb
         PERFORM VARYING LJ FROM 0 BY 1 UNTIL LJ >= DIM
             SET IV TO ACT(A-X + LJ)
             ADD ACT(A-XB + LJ) TO IV
@@ -1140,7 +1140,7 @@ FORWARD.
         END-PERFORM
     END-PERFORM
 
-    *> rmsnorm finale e classificatore
+    *> final rmsnorm and classifier
     MOVE A-X TO R-OUT
     MOVE A-X TO R-IN
     MOVE O-RMSFIN TO R-W
@@ -1159,9 +1159,9 @@ FORWARD.
     PERFORM MATMUL.
 
 *> ------------------------------------------------------------------
-*>  MATMUL: ACT(M-OUT..) = W(M-D x M-N) * x, con x gia' in QB.
-*>  Il ciclo interno e' tutto USAGE INDEX: GnuCOBOL lo traduce in
-*>  C nativo. Pesi a 12 bit per x entro XLIM: la somma sta in 32 bit.
+*>  MATMUL: ACT(M-OUT..) = W(M-D x M-N) * x, with x already in QB.
+*>  The inner loop is all USAGE INDEX: GnuCOBOL compiles it to
+*>  native C. Weights within WLIM times x within XLIM: the sum fits in 32 bits.
 *> ------------------------------------------------------------------
 MATMUL.
     SET IWI TO M-W
@@ -1176,7 +1176,7 @@ MATMUL.
             SET IWI UP BY 1
             SET IXI UP BY 1
         END-PERFORM
-        *> ritorno in Q16: IACC * 2^(esp_riga + esp_x - 16)
+        *> back to Q16: IACC * 2^(row_exp + x_exp - 16)
         SET ISH TO ER(IR)
         ADD QV-K TO ISH
         SUBTRACT 16 FROM ISH
@@ -1187,10 +1187,10 @@ MATMUL.
     END-PERFORM.
 
 *> ------------------------------------------------------------------
-*>  RMSNORM: ACT(R-OUT..) = W * x / sqrt(media(x^2) + 1e-5)
+*>  RMSNORM: ACT(R-OUT..) = W * x / sqrt(mean(x^2) + 1e-5)
 *> ------------------------------------------------------------------
 RMSNORM.
-    *> somma dei quadrati sugli interi quantizzati: x = QB * 2^QV-K
+    *> sum of squares on the quantized integers: x = QB * 2^QV-K
     MOVE R-IN TO QV-IN
     MOVE R-N TO QV-N
     SET ILIM TO RLIM
@@ -1203,7 +1203,7 @@ RMSNORM.
         ADD IP TO IACC
         SET IXI UP BY 1
     END-PERFORM
-    *> una sola radice quadrata (decimale) per vettore
+    *> a single (decimal) square root per vector
     SET ACC TO IACC
     SET R-K TO QV-K
     COMPUTE R-SS = ACC * (2 ** (2 * R-K - 32)) / R-N + 0.00001
@@ -1219,10 +1219,10 @@ RMSNORM.
     END-PERFORM.
 
 *> ------------------------------------------------------------------
-*>  ROPE: ruota coppie di q e k di un angolo che dipende da G-POS
+*>  ROPE: rotates pairs of q and k by an angle that depends on G-POS
 *> ------------------------------------------------------------------
 ROPE.
-    *> RPI = (i mod head_size) / 2, l'indice della frequenza
+    *> RPI = (i mod head_size) / 2, the frequency index
     MOVE 0 TO RPI
     PERFORM VARYING LI FROM 0 BY 2 UNTIL LI >= DIM
         COMPUTE RP = G-POS * HS2 + RPI + 1
@@ -1264,8 +1264,8 @@ ROTATE-PAIR.
     SET ACT(RA + 1) TO IV.
 
 *> ------------------------------------------------------------------
-*>  STORE-KV: salva k e v di questa posizione nella cache, quantizzati
-*>  testa per testa (12 bit + esponente)
+*>  STORE-KV: stores this position's k and v in the cache, quantized
+*>  head by head (small integers + exponent)
 *> ------------------------------------------------------------------
 STORE-KV.
     PERFORM VARYING KVH FROM 0 BY 1 UNTIL KVH >= N-KVH
@@ -1299,11 +1299,11 @@ STORE-KV.
     END-PERFORM.
 
 *> ------------------------------------------------------------------
-*>  ATTENTION: per ogni testa, softmax(q.k / sqrt(hs)) pesa i valori.
-*>  Tutto il lavoro per posizione e' in interi nativi.
+*>  ATTENTION: for each head, softmax(q.k / sqrt(hs)) weights the values.
+*>  All the per-position work is in native integers.
 *> ------------------------------------------------------------------
 ATTENTION.
-    *> q / sqrt(head_size), una volta per tutte le teste
+    *> q / sqrt(head_size), once for all heads
     SET IY TO INV-SQRT-HS
     PERFORM VARYING LJ FROM 0 BY 1 UNTIL LJ >= DIM
         SET IX TO ACT(A-Q + LJ)
@@ -1317,12 +1317,12 @@ ATTENTION.
         MOVE HS TO QV-N
         SET ILIM TO QLIM
         PERFORM QUANT-VEC
-        *> grouped-query attention: piu' teste q condividono una testa kv
+        *> grouped-query attention: several q heads share one kv head
         COMPUTE KVH = HD / KVMUL
         COMPUTE KV-BASE = LYR * SEQ-LEN * KVD + KVH * HS
         COMPUTE KE-BASE = LYR * SEQ-LEN * N-KVH + KVH + 1
 
-        *> punteggi: S(t) = q.k(t) in Q16
+        *> scores: S(t) = q.k(t) in Q16
         SET IKB TO KV-BASE
         SET IEB TO KE-BASE
         SET ITT TO 1
@@ -1351,7 +1351,7 @@ ATTENTION.
             SET ITT UP BY 1
         END-PERFORM
 
-        *> softmax: e(t) = exp(S(t) - max) in Q15 dalla tabella
+        *> softmax: e(t) = exp(S(t) - max) in Q15 from the table
         SET ISUM TO 0
         SET ITT TO 1
         PERFORM N-T TIMES
@@ -1363,7 +1363,7 @@ ATTENTION.
             SET ITT UP BY 1
         END-PERFORM
 
-        *> pesi a(t) = e(t) / somma in Q15, ed esponente massimo dei v
+        *> weights a(t) = e(t) / sum in Q15, and the largest v exponent
         SET IEB TO KE-BASE
         SET ITT TO 1
         SET IVMAX TO -100
@@ -1379,7 +1379,7 @@ ATTENTION.
             SET ITT UP BY 1
         END-PERFORM
 
-        *> allinea i pesi all'esponente comune dei v: c(t) = a(t) / 2^(max - e_t)
+        *> align the weights to the shared v exponent: c(t) = a(t) / 2^(max - e_t)
         SET IEB TO KE-BASE
         SET ITT TO 1
         PERFORM N-T TIMES
@@ -1394,7 +1394,7 @@ ATTENTION.
             SET ITT UP BY 1
         END-PERFORM
 
-        *> uscita: somma pesata dei v, riportata in Q16
+        *> output: weighted sum of v, brought back to Q16
         SET ISH TO IVMAX
         SUBTRACT 15 FROM ISH
         PERFORM VARYING LI FROM 1 BY 1 UNTIL LI > HS
@@ -1416,11 +1416,11 @@ ATTENTION.
     END-PERFORM.
 
 *> ==================================================================
-*>  CAMPIONAMENTO del prossimo token dai logit
+*>  SAMPLING of the next token from the logits
 *> ==================================================================
 SAMPLE.
     IF TEMPERATURE = 0
-        *> greedy: il token con il logit piu' alto (basta l'intero)
+        *> greedy: the token with the highest logit (the integer is enough)
         MOVE 0 TO G-NEXT
         MOVE ACT(A-LOG) TO L-MAX
         PERFORM VARYING LI FROM 1 BY 1 UNTIL LI >= N-VOCAB
@@ -1432,17 +1432,17 @@ SAMPLE.
         EXIT PARAGRAPH
     END-IF
 
-    *> softmax(logit / temperatura), tutto intero: le probabilita'
-    *> restano non normalizzate e si confrontano con P-SUM
+    *> softmax(logit / temperature), all integer: the probabilities
+    *> stay unnormalized and are compared against P-SUM
     MOVE ACT(A-LOG) TO L-MAX
     PERFORM VARYING LI FROM 1 BY 1 UNTIL LI >= N-VOCAB
         IF ACT(A-LOG + LI) > L-MAX
             MOVE ACT(A-LOG + LI) TO L-MAX
         END-IF
     END-PERFORM
-    *> exp((logit - max) / T) in Q15, nativo: la somma su 32000
-    *> token resta sotto 2^31
-    *> (max - logit) / T: Q16 / 64 = Q10, per 1/T in Q10 = Q20, / 16 = Q16
+    *> exp((logit - max) / T) in Q15, native: the sum over 32000
+    *> tokens stays below 2^31
+    *> (max - logit) / T: Q16 / 64 = Q10, times 1/T in Q10 = Q20, / 16 = Q16
     SET ISUM TO 0
     SET IY TO INV-TEMP
     DIVIDE 64 INTO IY
@@ -1460,7 +1460,7 @@ SAMPLE.
 
     COMPUTE P-COIN = FUNCTION RANDOM
     IF TOPP <= 0 OR TOPP >= 1
-        *> campiona dall'intera distribuzione
+        *> sample from the whole distribution
         COMPUTE P-TARGET = P-COIN * P-SUM
         COMPUTE G-NEXT = N-VOCAB - 1
         MOVE 0 TO P-CDF
@@ -1472,7 +1472,7 @@ SAMPLE.
             END-IF
         END-PERFORM
     ELSE
-        *> top-p (nucleus): solo i token piu' probabili fino a somma TOPP
+        *> top-p (nucleus): only the most likely tokens up to a total of TOPP
         COMPUTE P-CUTOFF = (1 - TOPP) / (N-VOCAB - 1) * P-SUM
         SET IT TO P-CUTOFF
         COMPUTE P-TARGET = TOPP * P-SUM
@@ -1509,12 +1509,12 @@ SAMPLE.
     END-IF.
 
 *> ==================================================================
-*>  TOKENIZER: testo -> token (BPE con i punteggi del vocabolario)
+*>  TOKENIZER: text -> tokens (BPE with the vocabulary scores)
 *> ==================================================================
 ENCODE-PROMPT.
     MOVE 1 TO N-ENC
     MOVE 1 TO ENC-TOK(1)
-    *> prefisso fittizio " " come fa sentencepiece
+    *> dummy " " prefix, as sentencepiece does
     IF PROMPT-LEN > 0
         MOVE LOW-VALUES TO LK-KEY
         MOVE SPACE TO LK-KEY(1:1)
@@ -1523,7 +1523,7 @@ ENCODE-PROMPT.
         MOVE FOUND-ID TO ENC-TOK(N-ENC)
     END-IF
 
-    *> un token per ogni carattere UTF-8 (o un token per byte)
+    *> one token per UTF-8 character (or one token per byte)
     MOVE 0 TO E-BUFLEN
     PERFORM VARYING E-I FROM 1 BY 1 UNTIL E-I > PROMPT-LEN
         COMPUTE E-BYTE = FUNCTION ORD(PROMPT-TXT(E-I:1)) - 1
@@ -1542,7 +1542,7 @@ ENCODE-PROMPT.
         END-IF
     END-PERFORM
 
-    *> fonde ripetutamente la coppia adiacente con il punteggio migliore
+    *> repeatedly merge the adjacent pair with the best score
     PERFORM UNTIL EXIT
         COMPUTE BEST-SCORE = -10000000000
         MOVE -1 TO BEST-ID
@@ -1585,7 +1585,7 @@ EMIT-CODEPOINT.
         ADD 1 TO N-ENC
         MOVE FOUND-ID TO ENC-TOK(N-ENC)
     ELSE
-        *> byte fallback: i token 3..258 sono i singoli byte
+        *> byte fallback: tokens 3..258 are the single bytes
         PERFORM VARYING E-A FROM 1 BY 1 UNTIL E-A > E-BUFLEN
             ADD 1 TO N-ENC
             COMPUTE ENC-TOK(N-ENC) = FUNCTION ORD(E-BUF(E-A:1)) - 1 + 3
@@ -1593,7 +1593,7 @@ EMIT-CODEPOINT.
     END-IF
     MOVE 0 TO E-BUFLEN.
 
-*> ricerca binaria nel vocabolario ordinato
+*> binary search in the sorted vocabulary
 LOOKUP.
     MOVE -1 TO FOUND-ID
     SEARCH ALL SV-ENTRY
@@ -1603,12 +1603,12 @@ LOOKUP.
     END-SEARCH.
 
 *> ==================================================================
-*>  DECODE: token -> testo stampabile
+*>  DECODE: token -> printable text
 *> ==================================================================
 DECODE-PRINT.
     MOVE 1 TO D-START
     MOVE VOC-LEN(G-NEXT + 1) TO D-LEN
-    *> dopo BOS, sentencepiece toglie lo spazio iniziale
+    *> after BOS, sentencepiece strips the leading space
     IF G-TOKEN = 1 AND D-LEN > 0
         IF VOC-STR(G-NEXT + 1)(1:1) = SPACE
             MOVE 2 TO D-START
@@ -1619,7 +1619,7 @@ DECODE-PRINT.
         EXIT PARAGRAPH
     END-IF
     MOVE VOC-STR(G-NEXT + 1)(D-START:D-LEN) TO D-PIECE
-    *> token come "<0x0A>" rappresentano un byte grezzo
+    *> tokens like "<0x0A>" stand for a raw byte
     IF D-LEN = 6 AND D-PIECE(1:3) = "<0x" AND D-PIECE(6:1) = ">"
         MOVE D-PIECE(4:1) TO HEX-CH
         PERFORM HEX-DIGIT
@@ -1630,7 +1630,7 @@ DECODE-PRINT.
         MOVE FUNCTION CHAR(D-BYTE + 1) TO D-PIECE(1:1)
         MOVE 1 TO D-LEN
     END-IF
-    *> un singolo byte si stampa solo se e' stampabile o spazio
+    *> a single byte is printed only if it is printable or whitespace
     IF D-LEN = 1
         COMPUTE D-BYTE = FUNCTION ORD(D-PIECE(1:1)) - 1
         IF NOT ((D-BYTE >= 32 AND D-BYTE <= 126)

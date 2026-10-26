@@ -1,10 +1,10 @@
        >>SOURCE FORMAT FREE
 *> ==================================================================
-*>  OVERFLOW - il prezzo della velocita' di USAGE INDEX.
+*>  OVERFLOW - the price of USAGE INDEX's speed.
 *>
-*>  Un campo USAGE INDEX e' un int C a 32 bit: se sfora, il valore
-*>  "gira" in silenzio. Un campo COMP-5 con ON SIZE ERROR invece
-*>  segnala l'errore e lascia il valore intatto.
+*>  A USAGE INDEX field is a 32-bit C int: when it overflows, the
+*>  value silently wraps around. A COMP-5 field with ON SIZE ERROR
+*>  raises the error and leaves the value untouched.
 *> ==================================================================
 IDENTIFICATION DIVISION.
 PROGRAM-ID. OVERFLOW.
@@ -21,45 +21,45 @@ MAIN.
     DISPLAY "1. USAGE INDEX: 2147483647 + 1"
     SET IX TO 2147483647
     ADD 1 TO IX
-        ON SIZE ERROR DISPLAY "   SIZE ERROR segnalato"
-        NOT ON SIZE ERROR DISPLAY "   nessun errore segnalato"
+        ON SIZE ERROR DISPLAY "   SIZE ERROR raised"
+        NOT ON SIZE ERROR DISPLAY "   no error raised"
     END-ADD
     SET C5-BIG TO IX
     MOVE C5-BIG TO SHOW
-    DISPLAY "   risultato: " SHOW
+    DISPLAY "   result: " SHOW
 
     DISPLAY "2. USAGE INDEX: 50000 * 50000"
     SET IX TO 50000
     MULTIPLY 50000 BY IX
-        ON SIZE ERROR DISPLAY "   SIZE ERROR segnalato"
-        NOT ON SIZE ERROR DISPLAY "   nessun errore segnalato"
+        ON SIZE ERROR DISPLAY "   SIZE ERROR raised"
+        NOT ON SIZE ERROR DISPLAY "   no error raised"
     END-MULTIPLY
     SET C5-BIG TO IX
     MOVE C5-BIG TO SHOW
-    DISPLAY "   risultato: " SHOW " (giusto: 2500000000)"
+    DISPLAY "   result: " SHOW " (correct: 2500000000)"
 
     DISPLAY "3. COMP-5 PIC S9(9): 50000 * 50000"
     MOVE 50000 TO C5
     MULTIPLY 50000 BY C5
-        ON SIZE ERROR DISPLAY "   SIZE ERROR segnalato"
-        NOT ON SIZE ERROR DISPLAY "   nessun errore segnalato"
+        ON SIZE ERROR DISPLAY "   SIZE ERROR raised"
+        NOT ON SIZE ERROR DISPLAY "   no error raised"
     END-MULTIPLY
     MOVE C5 TO SHOW
-    DISPLAY "   risultato: " SHOW " (valore precedente conservato)"
+    DISPLAY "   result: " SHOW " (previous value kept)"
 
     DISPLAY "4. COMP-5: 1 / 0"
     MOVE 1 TO C5
     DIVIDE 0 INTO C5
-        ON SIZE ERROR DISPLAY "   SIZE ERROR segnalato"
-        NOT ON SIZE ERROR DISPLAY "   nessun errore segnalato"
+        ON SIZE ERROR DISPLAY "   SIZE ERROR raised"
+        NOT ON SIZE ERROR DISPLAY "   no error raised"
     END-DIVIDE
 
     DISPLAY "5. USAGE INDEX: 1 / 0"
     SET IX TO 1
     SET C5 TO 0
     DIVIDE C5 INTO IX
-        ON SIZE ERROR DISPLAY "   SIZE ERROR segnalato"
-        NOT ON SIZE ERROR DISPLAY "   nessun errore segnalato"
+        ON SIZE ERROR DISPLAY "   SIZE ERROR raised"
+        NOT ON SIZE ERROR DISPLAY "   no error raised"
     END-DIVIDE
-    DISPLAY "   il programma e' ancora vivo"
+    DISPLAY "   the program is still alive"
     STOP RUN.

@@ -1,18 +1,18 @@
        >>SOURCE FORMAT FREE
 *> ==================================================================
-*>  ARITH - quanto costa "acc = acc + w * x" in GnuCOBOL?
+*>  ARITH - what does "acc = acc + w * x" cost in GnuCOBOL?
 *>
-*>  Lo stesso prodotto scalare (1000 elementi, valori interi tra
-*>  -1000 e 1000) scritto con tipi e istruzioni diversi. Tutte le
-*>  varianti usano lo stesso indice USAGE INDEX per scorrere le
-*>  tabelle, cosi' cambia solo l'aritmetica. Ogni variante gira per
-*>  almeno un secondo; il risultato deve essere identico per tutte.
+*>  The same dot product (1000 elements, integer values between
+*>  -1000 and 1000) written with different types and statements.
+*>  Every variant walks the tables with the same USAGE INDEX
+*>  subscript, so only the arithmetic changes. Each variant runs for
+*>  at least one second; the result must be the same for all of them.
 *>
-*>  Parte B: costo di singole operazioni (EXP, SQRT, CBL_READ_FILE).
+*>  Part B: cost of single operations (EXP, SQRT, CBL_READ_FILE).
 *>
-*>  Uso: arith [file [B]]  il file serve solo alla misura di
-*>                         CBL_READ_FILE (ne legge i primi 4 byte);
-*>                         con B si esegue solo la parte B
+*>  Usage: arith [file [B]]  the file is only used to time
+*>                           CBL_READ_FILE (reads its first 4 bytes);
+*>                           with B only part B runs
 *> ==================================================================
 IDENTIFICATION DIVISION.
 PROGRAM-ID. ARITH.
@@ -22,7 +22,7 @@ WORKING-STORAGE SECTION.
 78 N-ELEM          VALUE 1000.
 78 N-OPS-B         VALUE 100.
 
-*> gli stessi dati in quattro rappresentazioni
+*> the same data in four representations
 01 T-C2.
    05 W2           COMP-2 OCCURS N-ELEM TIMES.
    05 X2           COMP-2 OCCURS N-ELEM TIMES.
@@ -46,7 +46,7 @@ WORKING-STORAGE SECTION.
 01 RESULT          PIC S9(18) COMP-5.
 01 EXPECTED        PIC S9(18) COMP-5.
 
-*> parte B
+*> part B
 01 F               COMP-2 VALUE 0.5.
 01 G               COMP-2.
 01 BIG             PIC S9(18) COMP-5 VALUE 123456789012.
@@ -63,7 +63,7 @@ WORKING-STORAGE SECTION.
 01 F-FLAGS         PIC X COMP-X VALUE 0.
 01 F-BUF           PIC X(4).
 
-*> misura
+*> measurement
 01 V               PIC 99.
 01 V-NAME          PIC X(46).
 01 PASS-OPS        PIC 9(9) COMP-5.
@@ -93,8 +93,8 @@ MAIN.
     PERFORM INIT-DATA
 
     IF RUN-MODE NOT = "B"
-        DISPLAY "A. acc = acc + w * x, ns per moltiplicazione-somma"
-        DISPLAY "   (velocita' rispetto a COMP-5 + COMPUTE, la forma consigliata)"
+        DISPLAY "A. acc = acc + w * x, ns per multiply-add"
+        DISPLAY "   (speed relative to COMP-5 + COMPUTE, the recommended form)"
         MOVE N-ELEM TO PASS-OPS
         MOVE 2 TO V
         PERFORM MEASURE
@@ -106,11 +106,11 @@ MAIN.
         DISPLAY " "
     END-IF
 
-    DISPLAY "B. singole operazioni, ns per operazione"
+    DISPLAY "B. single operations, ns per operation"
     MOVE N-OPS-B TO PASS-OPS
     PERFORM VARYING V FROM 11 BY 1 UNTIL V > 15
         IF V = 15 AND FILE-PATH = SPACES
-            DISPLAY "   CBL_READ_FILE: saltato (nessun file indicato)"
+            DISPLAY "   CBL_READ_FILE: skipped (no file given)"
         ELSE
             PERFORM MEASURE
             MOVE NS-OP TO SHOW-NS
@@ -134,7 +134,7 @@ INIT-DATA.
         COMPUTE EXPECTED = EXPECTED + W5(K) * X5(K)
     END-PERFORM.
 
-*> ripete la variante V finche' non passa almeno un secondo
+*> repeats variant V until at least one second has passed
 MEASURE.
     MOVE 0 TO PASSES
     PERFORM GET-TIME
@@ -170,7 +170,7 @@ SHOW-A.
     IF RESULT = EXPECTED
         MOVE "ok" TO STATUS-TXT
     ELSE
-        MOVE "SBAGLIATO" TO STATUS-TXT
+        MOVE "WRONG" TO STATUS-TXT
     END-IF
     DISPLAY "   " V ". " V-NAME SHOW-NS " ns  " SHOW-X "x  "
             FUNCTION TRIM(STATUS-TXT).
@@ -179,7 +179,7 @@ GET-TIME.
     MOVE FUNCTION CURRENT-DATE TO CUR-DT
     COMPUTE NOW-S = C-HH * 3600 + C-MI * 60 + C-SS + C-HS / 100.
 
-*> ---- parte A: una passata = un prodotto scalare da 1000 termini --
+*> ---- part A: one pass = one 1000-term dot product ---------------
 PASS-1.
     MOVE "COMP-2 (float)        + COMPUTE" TO V-NAME
     MOVE 0 TO ACC-C2
@@ -243,10 +243,10 @@ PASS-6.
     END-PERFORM
     SET RESULT TO ACC-IX.
 
-*> i dati restano COMP-5: solo i campi che ricevono il risultato
-*> sono USAGE INDEX (e' la forma usata da llama2.cob)
+*> the data stays COMP-5: only the fields receiving the result
+*> are USAGE INDEX (this is the form llama2.cob uses)
 PASS-7.
-    MOVE "dati COMP-5, risultato INDEX + SET/MULT/ADD" TO V-NAME
+    MOVE "COMP-5 data, INDEX result + SET/MULT/ADD" TO V-NAME
     SET ACC-IX TO 0
     SET J TO 1
     PERFORM N-ELEM TIMES
@@ -257,7 +257,7 @@ PASS-7.
     END-PERFORM
     SET RESULT TO ACC-IX.
 
-*> ---- parte B: una passata = N-OPS-B operazioni -------------------
+*> ---- part B: one pass = N-OPS-B operations ----------------------
 PASS-11.
     MOVE "FUNCTION EXP (COMP-2)" TO V-NAME
     PERFORM N-OPS-B TIMES
@@ -284,10 +284,10 @@ PASS-14.
     END-PERFORM.
 
 PASS-15.
-    MOVE "CBL_READ_FILE di 4 byte" TO V-NAME
+    MOVE "4-byte CBL_READ_FILE" TO V-NAME
     CALL "CBL_OPEN_FILE" USING FILE-PATH F-ACCESS F-DENY F-DEVICE F-HANDLE
     IF RETURN-CODE NOT = 0
-        DISPLAY "impossibile aprire " FUNCTION TRIM(FILE-PATH)
+        DISPLAY "cannot open " FUNCTION TRIM(FILE-PATH)
         STOP RUN RETURNING 1
     END-IF
     PERFORM N-OPS-B TIMES

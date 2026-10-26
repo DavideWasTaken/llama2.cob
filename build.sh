@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Compila llama2.cob con GnuCOBOL.
-# -fno-trunc: gli interi binari usano tutta la loro larghezza (necessario
-# per gli accumulatori a 64 bit e per la velocita' dell'aritmetica intera).
+# Builds llama2.cob with GnuCOBOL.
+# -fno-trunc: binary integers use their full width instead of being
+# truncated to their PICTURE digits (needed by the 64-bit accumulators).
 set -e
 cd "$(dirname "$0")"
 mkdir -p build

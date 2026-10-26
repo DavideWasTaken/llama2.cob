@@ -99,7 +99,7 @@ MAIN.
         MOVE 2 TO V
         PERFORM MEASURE
         MOVE NS-OP TO BASE-NS
-        PERFORM VARYING V FROM 1 BY 1 UNTIL V > 7
+        PERFORM VARYING V FROM 1 BY 1 UNTIL V > 8
             PERFORM MEASURE
             PERFORM SHOW-A
         END-PERFORM
@@ -150,6 +150,7 @@ MEASURE.
                 WHEN 5  PERFORM PASS-5
                 WHEN 6  PERFORM PASS-6
                 WHEN 7  PERFORM PASS-7
+                WHEN 8  PERFORM PASS-8
                 WHEN 11 PERFORM PASS-11
                 WHEN 12 PERFORM PASS-12
                 WHEN 13 PERFORM PASS-13
@@ -256,6 +257,20 @@ PASS-7.
         SET J UP BY 1
     END-PERFORM
     SET RESULT TO ACC-IX.
+
+*> only the product needs an INDEX field: ADD into a binary field
+*> is already native (cob_add_s64), MULTIPLY is not
+PASS-8.
+    MOVE "INDEX product, COMP-5 sum + SET/MULT/ADD" TO V-NAME
+    MOVE 0 TO ACC-C5
+    SET J TO 1
+    PERFORM N-ELEM TIMES
+        SET P-IX TO W5(J)
+        MULTIPLY X5(J) BY P-IX
+        ADD P-IX TO ACC-C5
+        SET J UP BY 1
+    END-PERFORM
+    MOVE ACC-C5 TO RESULT.
 
 *> ---- part B: one pass = N-OPS-B operations ----------------------
 PASS-11.

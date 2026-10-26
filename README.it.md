@@ -6,7 +6,7 @@
 
 Il progetto è nato come esperimento: portare [llama2.c](https://github.com/karpathy/llama2.c) di Andrej Karpathy in COBOL. La prima versione funzionava, ma andava a 1,2 token al secondo. Per capire perché abbiamo guardato il C che GnuCOBOL genera, e abbiamo trovato una cosa che riguarda qualunque programma GnuCOBOL, non solo questo:
 
-> **In GnuCOBOL 3.2 ogni `COMPUTE` passa per l'aritmetica decimale a precisione arbitraria (GMP), anche tra campi binari `COMP-5`, la forma che la documentazione consiglia per la velocità. Invece `SET`, `ADD`, `SUBTRACT`, `MULTIPLY` e `DIVIDE` con un campo `USAGE INDEX` come destinazione vengono tradotti in aritmetica C nativa: circa 100 volte più veloci.**
+> **In GnuCOBOL 3.2 ogni `COMPUTE`, `MULTIPLY` e `DIVIDE` passa per l'aritmetica decimale a precisione arbitraria (GMP), anche tra campi binari `COMP-5`, la forma che la documentazione consiglia per la velocità. Solo `ADD` e `SUBTRACT` su campi binari vengono tradotti in C nativo. Con un campo `USAGE INDEX` come destinazione diventano aritmetica C nativa anche `MULTIPLY` e `DIVIDE`, e un prodotto scalare diventa circa 100 volte più veloce.**
 
 Il prezzo è alto, ed è descritto sotto: 32 bit, nessun controllo di overflow (`ON SIZE ERROR` viene ignorato) e una divisione per zero fa terminare il programma. Usato dove è sicuro, ha portato il transformer da 1,2 a oltre 1300 token al secondo, più veloce di `run.c` compilato con `gcc -O3` sul modello da 15M.
 
@@ -14,7 +14,7 @@ Non abbiamo trovato questo comportamento documentato: la [FAQ](https://gnucobol.
 
 ## La scoperta in numeri
 
-Lo stesso prodotto scalare `acc = acc + w * x` su 1000 interi, scritto in sette modi (`bench/arith.cob`). Tutte le varianti scorrono le tabelle con lo stesso indice, quindi cambia solo l'aritmetica. Tutte danno lo stesso risultato.
+Lo stesso prodotto scalare `acc = acc + w * x` su 1000 interi, scritto in otto modi (`bench/arith.cob`). Tutte le varianti scorrono le tabelle con lo stesso indice, quindi cambia solo l'aritmetica. Tutte danno lo stesso risultato.
 
 GnuCOBOL 3.2, gcc 15.2, Intel i7-10700K, `cobc -x -O2`:
 
@@ -27,10 +27,13 @@ GnuCOBOL 3.2, gcc 15.2, Intel i7-10700K, `cobc -x -O2`:
 | `USAGE INDEX` | `COMPUTE` | 39 | uguale |
 | **`USAGE INDEX`** | **`SET` / `MULTIPLY` / `ADD`** | **0,36** | **~100 volte più veloce** |
 | dati `COMP-5`, risultato `USAGE INDEX` | `SET` / `MULTIPLY` / `ADD` | 0,36 | ~100 volte più veloce |
+| dati e somma `COMP-5`, prodotto `USAGE INDEX` | `SET` / `MULTIPLY` / `ADD` | 0,47 | ~80 volte più veloce |
 
-Con `-fno-trunc` i numeri non cambiano (`bench/run.sh` misura entrambe le compilazioni). Le due righe da tenere a mente:
-- **Conta la combinazione, non il tipo da solo.** `COMPUTE` su un campo `INDEX` resta decimale (39 ns). Diventano nativi solo i verbi di formato 1 (`ADD x TO idx`, `MULTIPLY x BY idx`, `SUBTRACT x FROM idx`, `DIVIDE x INTO idx`, `SET idx TO x`, `SET idx UP BY x`) quando il campo che riceve il risultato è `USAGE INDEX`.
-- **I dati possono restare `COMP-5`.** Basta che sia `INDEX` il campo che riceve il risultato. Le tabelle dei pesi di `llama2.cob` sono `PIC S9(4) COMP-5`, cioè interi a 16 bit.
+Con `-fno-trunc` i numeri non cambiano (`bench/run.sh` misura entrambe le compilazioni). Le cose da tenere a mente:
+- **Conta l'istruzione, non il tipo da solo.** `COMPUTE` su un campo `INDEX` resta decimale (39 ns). Possono diventare nativi solo i verbi di formato 1: `ADD x TO y`, `SUBTRACT x FROM y`, `MULTIPLY x BY y`, `DIVIDE x INTO y`, `SET idx TO x`, `SET idx UP BY x`.
+- **`ADD` e `SUBTRACT` sono già nativi su campi `COMP-5` e `BINARY-*`**, se il valore sommato sta in 32 bit. Non lo sono con `GIVING`, con `ON SIZE ERROR`, né su `COMP` semplice se non si compila con `-fno-trunc`.
+- **`MULTIPLY` e `DIVIDE` sono nativi solo se il campo che riceve il risultato è `USAGE INDEX`.** Su `COMP-5` chiamano `cob_mul` / `cob_div` di libcob, che lavorano in decimale. Il vero collo di bottiglia è questo.
+- **Solo il prodotto ha bisogno di un campo `INDEX`.** I dati e la somma possono restare `COMP-5` (ultima riga; la somma a 64 bit costa un po' di più). Le tabelle dei pesi di `llama2.cob` sono `PIC S9(4) COMP-5`, cioè interi a 16 bit.
 
 ### Perché: il C generato
 
@@ -54,6 +57,8 @@ cob_decimal_get_field (d_0, &f_32, 0);
 ```
 
 Il primo sono sei chiamate di libreria che convertono ogni operando in un numero GMP. Il secondo è C puro, che gcc può ottimizzare liberamente: 0,36 ns sono circa 1,5 cicli di clock per operazione.
+
+L'`ADD` in una somma `COMP-5` (ultima riga della tabella) diventa `cob_add_s64 (b_32, ...)`: una funzione inline nell'header generato che fa un semplice `n += val`. Con `COMP-5` come destinazione, invece, `MULTIPLY` diventa `cob_mul (...)`, una chiamata a libcob che converte entrambi gli operandi in decimale.
 
 ## Quando NON usarlo
 

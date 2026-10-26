@@ -6,7 +6,7 @@
 
 This project started as an experiment: port Andrej Karpathy's [llama2.c](https://github.com/karpathy/llama2.c) to COBOL. The first version worked, but ran at 1.2 tokens per second. To find out why, we read the C code that GnuCOBOL generates, and found something that applies to any GnuCOBOL program, not just this one:
 
-> **In GnuCOBOL 3.2 every `COMPUTE` goes through arbitrary-precision decimal arithmetic (GMP), even between binary `COMP-5` fields, which is the form the documentation recommends for speed. By contrast, `SET`, `ADD`, `SUBTRACT`, `MULTIPLY` and `DIVIDE` with a `USAGE INDEX` field as the receiving item are compiled to native C arithmetic: about 100 times faster.**
+> **In GnuCOBOL 3.2 every `COMPUTE`, `MULTIPLY` and `DIVIDE` goes through arbitrary-precision decimal arithmetic (GMP), even between binary `COMP-5` fields, which is the form the documentation recommends for speed. Only `ADD` and `SUBTRACT` on binary fields are compiled to native C. With a `USAGE INDEX` field as the receiving item, `MULTIPLY` and `DIVIDE` become native C arithmetic too, and a dot product gets about 100 times faster.**
 
 The price is steep, and it is described below: 32 bits, no overflow detection (`ON SIZE ERROR` is ignored), and a division by zero kills the program. Used where it is safe, it took the transformer from 1.2 to over 1300 tokens per second, faster than `run.c` built with `gcc -O3` on the 15M model.
 
@@ -14,7 +14,7 @@ We could not find this behavior documented anywhere: the [FAQ](https://gnucobol.
 
 ## The finding in numbers
 
-The same dot product, `acc = acc + w * x` over 1000 integers, written seven ways (`bench/arith.cob`). Every variant walks the tables with the same index, so only the arithmetic changes. All variants produce the same result.
+The same dot product, `acc = acc + w * x` over 1000 integers, written eight ways (`bench/arith.cob`). Every variant walks the tables with the same index, so only the arithmetic changes. All variants produce the same result.
 
 GnuCOBOL 3.2, gcc 15.2, Intel i7-10700K, `cobc -x -O2`:
 
@@ -27,10 +27,13 @@ GnuCOBOL 3.2, gcc 15.2, Intel i7-10700K, `cobc -x -O2`:
 | `USAGE INDEX` | `COMPUTE` | 39 | same |
 | **`USAGE INDEX`** | **`SET` / `MULTIPLY` / `ADD`** | **0.36** | **~100× faster** |
 | `COMP-5` data, `USAGE INDEX` result | `SET` / `MULTIPLY` / `ADD` | 0.36 | ~100× faster |
+| `COMP-5` data and sum, `USAGE INDEX` product | `SET` / `MULTIPLY` / `ADD` | 0.47 | ~80× faster |
 
-The numbers do not change with `-fno-trunc` (`bench/run.sh` measures both builds). The two things to remember:
-- **It is the combination that matters, not the type alone.** `COMPUTE` on an `INDEX` field is still decimal (39 ns). Only the format-1 verbs become native (`ADD x TO idx`, `MULTIPLY x BY idx`, `SUBTRACT x FROM idx`, `DIVIDE x INTO idx`, `SET idx TO x`, `SET idx UP BY x`), and only when the receiving field is `USAGE INDEX`.
-- **The data can stay `COMP-5`.** Only the field receiving the result has to be `INDEX`. The weight tables in `llama2.cob` are `PIC S9(4) COMP-5`, that is 16-bit integers.
+The numbers do not change with `-fno-trunc` (`bench/run.sh` measures both builds). The things to remember:
+- **It is the statement that matters, not the type alone.** `COMPUTE` on an `INDEX` field is still decimal (39 ns). Only the format-1 verbs can be native: `ADD x TO y`, `SUBTRACT x FROM y`, `MULTIPLY x BY y`, `DIVIDE x INTO y`, `SET idx TO x`, `SET idx UP BY x`.
+- **`ADD` and `SUBTRACT` are already native on `COMP-5` and `BINARY-*` fields**, if the value added fits in 32 bits. They are not native with `GIVING`, with `ON SIZE ERROR`, or on plain `COMP` unless you build with `-fno-trunc`.
+- **`MULTIPLY` and `DIVIDE` are native only when the receiving field is `USAGE INDEX`.** On `COMP-5` they call `cob_mul` / `cob_div` in libcob, which work in decimal. This is the real bottleneck.
+- **Only the product needs an `INDEX` field.** The data and the running sum can stay `COMP-5` (last row; the 64-bit sum costs a little more). The weight tables in `llama2.cob` are `PIC S9(4) COMP-5`, that is 16-bit integers.
 
 ### Why: the generated C
 
@@ -54,6 +57,8 @@ cob_decimal_get_field (d_0, &f_32, 0);
 ```
 
 The first is six library calls that turn every operand into a GMP number. The second is plain C that gcc is free to optimize: 0.36 ns is about 1.5 clock cycles per operation.
+
+The `ADD` into a `COMP-5` sum (last row of the table) becomes `cob_add_s64 (b_32, ...)`: a static inline helper in the generated header that does a plain `n += val`. With `COMP-5` as the receiving field, `MULTIPLY` becomes `cob_mul (...)` instead, a libcob call that converts both operands to decimal.
 
 ## When NOT to use it
 
